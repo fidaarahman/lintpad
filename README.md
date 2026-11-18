@@ -1,1 +1,1 @@
-# lintpad
+Text tool
