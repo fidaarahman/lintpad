@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lintpad</title>
+<style>
+  :root { --ok:#1a7f37; --err:#cf222e; --warn:#9a6700; --bg:#f6f8fa; --line:#d0d7de; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background:var(--bg); color:#1f2328; }
+  header { padding:16px 24px; background:#24292f; color:#fff; }
+  header h1 { margin:0; font-size:20px; }
+  header p { margin:4px 0 0; font-size:13px; opacity:.8; }
+  main { display:grid; grid-template-columns:1fr 1fr; gap:16px; padding:16px 24px; max-width:1400px; margin:auto; }
+  @media (max-width:900px) { main { grid-template-columns:1fr; } }
+  .card { background:#fff; border:1px solid var(--line); border-radius:8px; padding:16px; }
+  label { display:block; font-weight:600; font-size:13px; margin:12px 0 4px; }
+  input, select, textarea { width:100%; padding:8px; border:1px solid var(--line); border-radius:6px; font:inherit; font-size:14px; }
+  textarea { resize:vertical; }
+  .row { display:grid; grid-template-columns:1fr 1fr; gap:12px; }
+  button { padding:10px 18px; border:0; border-radius:6px; background:#1f6feb; color:#fff; font-weight:600; cursor:pointer; font-size:14px; }
+  button.secondary { background:#6e7781; }
+  .actions { display:flex; gap:8px; margin-top:16px; align-items:center; flex-wrap:wrap; }
+  .check { display:flex; gap:8px; align-items:center; font-weight:400; margin:0; }
+  .check input { width:auto; }
+  #summary { padding:12px; border-radius:6px; font-weight:700; margin-bottom:12px; }
+  .ready { background:#dafbe1; color:var(--ok); }
+  .notready { background:#ffebe9; color:var(--err); }
+  .pending { background:#fff8c5; color:var(--warn); }
+  ul { list-style:none; padding:0; margin:0; }
+  li { padding:8px 0; border-bottom:1px solid #eaeef2; font-size:14px; }
+  .snip { display:block; margin-top:4px; font-family:ui-monospace, Consolas, monospace; font-size:12px; background:#f6f8fa; padding:4px 6px; border-radius:4px; white-space:pre-wrap; word-break:break-word; }
+  .e { color:var(--err); } .w { color:var(--warn); } .o { color:var(--ok); }
+  .hint { font-size:12px; color:#656d76; margin-top:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Lintpad</h1>
+  <p>Runs entirely in your browser. Nothing is saved or sent anywhere.</p>
+</header>
+<main>
+  <section class="card">
+    <label for="page">Reference page text</label>
+    <textarea id="page" rows="9" placeholder="Paste the text of the official profile page here"></textarea>
+    <div class="row">
+      <div>
+        <label for="surname">Surname</label>
+        <input id="surname" placeholder="e.g. Zhang">
+      </div>
+      <div>
+        <label for="target">Organisation</label>
+        <select id="target"></select>
+      </div>
+    </div>
+    <div class="row">
+      <div>
+        <label for="pageEmail">Email on page</label>
+        <input id="pageEmail" placeholder="auto-filled from page text">
+      </div>
+      <div>
+        <label for="toEmail">Sending to</label>
+        <input id="toEmail" placeholder="address you will send to">
+      </div>
+    </div>
+    <label for="subject">Subject</label>
+    <input id="subject" spellcheck="true">
+    <label for="draft">Draft</label>
+    <textarea id="draft" rows="16" spellcheck="true" placeholder="Paste the full draft here (greeting to signature)"></textarea>
+    <div class="hint">Your browser underlines spelling mistakes in the Subject and Draft boxes.</div>
+    <div class="actions">
+      <button id="run">Check</button>
+      <button id="clear" class="secondary">Clear</button>
+    </div>
+  </section>
+  <section class="card">
+    <div id="summary" class="pending">Paste the text and press Check.</div>
+    <ul id="results"></ul>
+    <div class="actions">
+      <label class="check"><input type="checkbox" id="cv"> Attachment added</label>
+    </div>
+  </section>
+</main>
+<script>
+// ================= SETTINGS (edit these) =================
+const MY_NAME = "Fida Ur Rahman";
+const PORTFOLIO = "https://fidaurrahman.me/";
+const SELF_ORG = ["Capital University of Science and Technology", "CUST"]; // ignored in checks
+const ORGS = {
+  "Hohai University": ["Hohai University", "Hohai", "HHU"],
+  "Xidian University": ["Xidian University", "Xidian"],
+  "USTC": ["University of Science and Technology of China", "USTC"],
+  "UESTC": ["University of Electronic Science and Technology of China", "UESTC"],
+  "NJUST": ["Nanjing University of Science and Technology", "NJUST"],
+  "Nanjing University": ["Nanjing University", "NJU"],
+  "DLUT": ["Dalian University of Technology", "DLUT"],
+  "CAS / UCAS": ["University of Chinese Academy of Sciences", "Chinese Academy of Sciences",
+                 "Institute of Automation", "Shenzhen Institutes of Advanced Technology",
+                 "UCAS", "CASIA", "SIAT"],
+  "Shenyang University of Technology": ["Shenyang University of Technology"]
+};
+const ARTIFACTS = [
+  [/utm_[a-z]+=/i, "Tracking parameter (utm_) inside a link"],
+  [/chatgpt|openai\.com/i, "Mentions ChatGPT / OpenAI"],
+  [/<\s*cite\b|turn\d+search\d+|【\d+†/i, "Leftover citation code"],
+  [/mailtrack|mailsuite|sender notified/i, "Tracker footer text"],
+  [/\[(?:name|professor|prof|university|paper|title|insert|your|email|date|link|x)\b[^\]]*\]/i, "Unfilled [placeholder]"],
+  [/\{\{|\}\}/, "Unfilled {{placeholder}}"],
+  [/\*\*|^\s*#{1,6}\s/m, "Markdown symbols (** or #) left in text"],
+  [/`/, "Stray backtick ( ` ) character"],
+  [/\bas an ai\b/i, "AI-assistant phrasing"]
+];
+// =========================================================
+
+const $ = id => document.getElementById(id);
+const EMAIL_RE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
+let lastErrors = null, lastWarns = 0;
+
+function escapeRe(s) { return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"); }
+function canon(s) {
+  let t = (s || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z]/g, "");
+  if (t === "lv" || t === "lyu") t = "lu";
+  return t;
+}
+function snip(text, i, len) {
+  const s = Math.max(0, i - 45), e = Math.min(text.length, i + len + 45);
+  return (s > 0 ? "…" : "") + text.slice(s, e).replace(/\s+/g, " ") + (e < text.length ? "…" : "");
+}
+function findOrgs(text) {
+  const entries = [];
+  SELF_ORG.forEach(a => entries.push({ group: "__self", alias: a }));
+  for (const [g, aliases] of Object.entries(ORGS)) aliases.forEach(a => entries.push({ group: g, alias: a }));
+  entries.sort((a, b) => b.alias.length - a.alias.length);
+  let work = text;
+  const hits = [];
+  for (const { group, alias } of entries) {
+    const caseSensitive = alias === alias.toUpperCase();
+    const re = new RegExp("\\b" + escapeRe(alias) + "\\b", caseSensitive ? "g" : "gi");
+    let m;
+    while ((m = re.exec(work)) !== null) {
+      if (group !== "__self") hits.push({ group, index: m.index, len: m[0].length });
+      work = work.slice(0, m.index) + " ".repeat(m[0].length) + work.slice(m.index + m[0].length);
+      re.lastIndex = m.index + m[0].length;
+    }
+  }
+  return hits;
+}
+
+function run() {
+  const res = [];
+  const add = (t, msg, s) => res.push({ t, msg, s });
+  const page = $("page").value;
+  const surname = $("surname").value.trim();
+  const target = $("target").value;
+  const to = $("toEmail").value.trim().toLowerCase();
+  const subject = $("subject").value;
+  const draft = $("draft").value.replace(/\r/g, "");
+  const all = subject + "\n" + draft;
+
+  if (!draft.trim()) { add("e", "Draft is empty."); return render(res); }
+  if (!subject.trim()) add("w", "Subject is empty.");
+
+  // 1. Greeting
+  const lines = draft.split("\n").map(l => l.trim()).filter(Boolean);
+  const first = lines[0] || "";
+  const gm = first.match(/^(dear|respected|hello|hi)\s+(?:prof(?:essor)?\.?|dr\.?)\s+(.+?)[,:;]?\s*$/i);
+  if (!gm) add("e", 'First line is not a greeting like "Dear Professor X,".', first);
+  else if (!surname) add("w", "Enter the surname to check the greeting.");
+  else if (gm[2].split(/[\s-]+/).map(canon).includes(canon(surname))) add("o", "Greeting name matches.");
+  else add("e", `Greeting name does not match "${surname}".`, first);
+
+  // 2. Surname appears on the reference page
+  if (surname && page.trim()) {
+    const tokens = page.split(/[^A-Za-zÀ-ÿ]+/).map(canon);
+    if (tokens.includes(canon(surname))) add("o", "Surname appears on the reference page.");
+    else add("w", `"${surname}" not found on the reference page. Is this the right page?`);
+  }
+
+  // 3. Other names used as Professor/Dr
+  const rest = draft.slice(draft.indexOf(first) + first.length);
+  const pm = /\b(?:Professor|Prof\.|Dr\.)\s+([A-Z][A-Za-zÀ-ÿ’'\-]*)/g;
+  let m;
+  while ((m = pm.exec(rest)) !== null) {
+    if (surname && canon(m[1]) !== canon(surname))
+      add("w", `Another name appears: "${m[0]}"`, snip(rest, m.index, m[0].length));
+  }
+
+  // 4. Recipient address
+  const pageEmails = new Set((page.match(EMAIL_RE) || []).map(x => x.toLowerCase()));
+  const pe = $("pageEmail").value.trim().toLowerCase();
+  if (pe) pageEmails.add(pe);
+  if (!to) add("w", '"Sending to" address not entered.');
+  else if (!pageEmails.size) add("w", "No email address on the reference page to compare with.");
+  else if (pageEmails.has(to)) add("o", "Sending address matches the reference page.");
+  else add("e", `Sending address ${to} is not on the reference page (${[...pageEmails].join(", ")}).`);
+
+  // 5. Organisation names
+  const hits = findOrgs(all);
+  if (!target) add("w", "Choose the organisation to check names.");
+  else {
+    const wrong = hits.filter(h => h.group !== target);
+    wrong.forEach(h => add("e", `Mentions ${h.group}, not ${target}.`, snip(all, h.index, h.len)));
+    if (!hits.some(h => h.group === target)) add("w", `${target} is not mentioned in the subject or draft.`);
+    else if (!wrong.length) add("o", `Organisation name correct (${target}).`);
+  }
+
+  // 6. Leftovers
+  let clean = true;
+  for (const [re, msg] of ARTIFACTS) {
+    const mm = all.match(re);
+    if (mm) { clean = false; add("e", msg, snip(all, mm.index, mm[0].length)); }
+  }
+  if (clean) add("o", "No leftover links, tracker text or placeholders.");
+
+  // 7. Portfolio link
+  const host = new URL(PORTFOLIO).hostname.toLowerCase();
+  const base = host.split(".")[0];
+  const found = all.match(new RegExp("\\b" + escapeRe(base) + "\\.[^\\s<>()\"']*", "gi")) || [];
+  if (!found.length) add("w", "Portfolio link not included.");
+  found.forEach(f => {
+    const n = f.toLowerCase().replace(/[.,;:!]+$/, "").replace(/\/+$/, "");
+    if (n === host) add("o", "Portfolio link is correct.");
+    else add("e", `Portfolio link looks wrong: ${f} (should be ${PORTFOLIO})`);
+  });
+
+  // 8. Signature and name spelling
+  const extra = all.match(new RegExp(escapeRe(MY_NAME) + "(?=[A-Za-z])", "i"));
+  if (extra) add("e", "Your name has extra letters attached.", snip(all, extra.index, extra[0].length + 3));
+  if (lines.slice(-4).some(l => l === MY_NAME)) add("o", "Signature present.");
+  else add("e", `Signature "${MY_NAME}" missing at the end (or misspelled).`, lines.slice(-2).join("  |  "));
+
+  // 9. Question
+  if (/\?/.test(draft)) add("o", "Contains a question.");
+  else add("w", "No question mark. End with one clear question.");
+
+  // 10. Repeated sentences
+  const sents = draft.replace(/\s+/g, " ").split(/(?<=[.!?])\s+/).map(s => s.trim().toLowerCase()).filter(s => s.length > 40);
+  const cnt = {};
+  sents.forEach(s => cnt[s] = (cnt[s] || 0) + 1);
+  Object.entries(cnt).filter(([, c]) => c > 1).forEach(([s]) => add("w", "Sentence repeated.", s.slice(0, 120) + "…"));
+
+  // 11. Quotes and spacing
+  if ((all.match(/"/g) || []).length % 2) add("w", 'Unmatched straight quote (").');
+  if ((all.match(/“/g) || []).length !== (all.match(/”/g) || []).length) add("w", "Unmatched curly quotes (“ ”).");
+  const sp = all.match(/[a-z]{2}[.,;][A-Z]/);
+  if (sp) add("w", "Missing space after punctuation.", snip(all, sp.index, sp[0].length));
+
+  // 12. Length
+  const wc = (draft.match(/\S+/g) || []).length;
+  add(wc > 320 ? "w" : "o", `Length: ${wc} words${wc > 320 ? " (long; aim for under 300)" : ""}.`);
+
+  render(res);
+}
+
+function render(res) {
+  const order = { e: 0, w: 1, o: 2 }, icon = { e: "❌", w: "⚠️", o: "✅" };
+  const ul = $("results");
+  ul.innerHTML = "";
+  res.sort((a, b) => order[a.t] - order[b.t]).forEach(r => {
+    const li = document.createElement("li");
+    const span = document.createElement("span");
+    span.className = r.t;
+    span.textContent = `${icon[r.t]} ${r.msg}`;
+    li.appendChild(span);
+    if (r.s) {
+      const sn = document.createElement("span");
+      sn.className = "snip";
+      sn.textContent = r.s;
+      li.appendChild(sn);
+    }
+    ul.appendChild(li);
+  });
+  lastErrors = res.filter(r => r.t === "e").length;
+  lastWarns = res.filter(r => r.t === "w").length;
+  updateSummary();
+}
+
+function updateSummary() {
+  const sum = $("summary");
+  if (lastErrors === null) return;
+  if (lastErrors > 0) {
+    sum.className = "notready";
+    sum.textContent = `Not ready: ${lastErrors} error(s), ${lastWarns} warning(s).`;
+  } else if (!$("cv").checked) {
+    sum.className = "pending";
+    sum.textContent = `No errors (${lastWarns} warning(s)). Tick "Attachment added" when done.`;
+  } else {
+    sum.className = "ready";
+    sum.textContent = `Ready to send${lastWarns ? ` (review ${lastWarns} warning(s))` : ""}.`;
+  }
+}
+
+// Setup
+(function init() {
+  const sel = $("target");
+  sel.innerHTML = '<option value="">— choose —</option>' +
+    Object.keys(ORGS).map(g => `<option value="${g}">${g}</option>`).join("");
+  $("page").addEventListener("input", () => {
+    const page = $("page").value;
+    const emails = [...new Set((page.match(EMAIL_RE) || []).map(x => x.toLowerCase()))];
+    if (emails.length && !$("pageEmail").value) $("pageEmail").value = emails[0];
+    if (!$("target").value) {
+      const c = {};
+      findOrgs(page).forEach(h => c[h.group] = (c[h.group] || 0) + 1);
+      const best = Object.entries(c).sort((a, b) => b[1] - a[1])[0];
+      if (best) $("target").value = best[0];
+    }
+  });
+  $("run").addEventListener("click", run);
+  $("cv").addEventListener("change", updateSummary);
+  $("clear").addEventListener("click", () => {
+    ["page", "surname", "pageEmail", "toEmail", "subject", "draft"].forEach(id => $(id).value = "");
+    $("target").value = "";
+    $("cv").checked = false;
+    $("results").innerHTML = "";
+    lastErrors = null;
+    $("summary").className = "pending";
+    $("summary").textContent = "Paste the text and press Check.";
+  });
+})();
+</script>
+</body>
+</html>
